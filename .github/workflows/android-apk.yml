@@ -87,8 +87,12 @@ jobs:
           chmod +x ./gradlew
           ./gradlew --no-daemon --stacktrace assembleDebug assembleRelease
 
-      - name: Sign release APK with the CI debug keystore
+      - name: Sign release APK
         working-directory: android
+        env:
+          CI_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          CI_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          CI_KEYSTORE_ALIAS: ${{ secrets.ANDROID_KEYSTORE_ALIAS }}
         run: |
           set -euo pipefail
           apk_dir="app/build/outputs/apk/release"
@@ -96,17 +100,50 @@ jobs:
           unsigned="$(find "$apk_dir" -maxdepth 1 -name '*.apk' ! -name '*-signed.apk' | sort | head -n 1)"
           test -n "$unsigned"
           echo "Signing: $unsigned"
-          apksigner="${ANDROID_HOME}/build-tools/36.0.0/apksigner"
-          if [ ! -x "$apksigner" ]; then
-            apksigner="$(command -v apksigner)"
+
+          apksigner="$(find "${ANDROID_HOME:-/usr/local/lib/android/sdk}/build-tools" -maxdepth 2 -name apksigner -type f | sort | tail -n 1)"
+          echo "apksigner: $apksigner"
+          test -x "$apksigner"
+          "$apksigner" version
+
+          # Prefer a repository-provided keystore, then a pre-existing debug
+          # keystore, and finally a throwaway one generated for this run.
+          keystore=""
+          mkdir -p "$RUNNER_TEMP/keystore"
+          if [ -n "${CI_KEYSTORE_BASE64:-}" ]; then
+            keystore="$RUNNER_TEMP/keystore/ci.jks"
+            printf '%s' "$CI_KEYSTORE_BASE64" | base64 -d > "$keystore"
+            store_pass="${CI_KEYSTORE_PASSWORD:-android}"
+            key_alias="${CI_KEYSTORE_ALIAS:-recall-lite}"
+            echo "Using keystore from ANDROID_KEYSTORE_BASE64"
+          else
+            echo "No ANDROID_KEYSTORE_BASE64 secret; looking for a debug keystore"
+            echo "--- ${HOME}/.android ---"
+            ls -la "$HOME/.android" 2>/dev/null || true
+            keystore="$(find "$HOME" -name 'debug.keystore' -type f 2>/dev/null | head -n 1)"
+            store_pass="android"
+            key_alias="androiddebugkey"
+            if [ -z "$keystore" ]; then
+              echo "No debug keystore found; generating a throwaway signing key"
+              keystore="$RUNNER_TEMP/keystore/ci.jks"
+              keytool -genkeypair -noprompt \
+                -keystore "$keystore" \
+                -storetype PKCS12 \
+                -alias recall-lite \
+                -keyalg RSA -keysize 2048 -validity 10000 \
+                -storepass android -keypass android \
+                -dname "CN=Recall Lite CI, OU=CI, O=Recall Lite, L=NA, ST=NA, C=CN"
+              store_pass="android"
+              key_alias="recall-lite"
+            fi
           fi
-          keystore="${HOME}/.android/debug.keystore"
-          test -f "$keystore"
+          echo "keystore: $keystore (alias: $key_alias)"
+
           "$apksigner" sign \
             --ks "$keystore" \
-            --ks-pass pass:android \
-            --key-pass pass:android \
-            --ks-key-alias androiddebugkey \
+            --ks-pass "pass:$store_pass" \
+            --key-pass "pass:$store_pass" \
+            --ks-key-alias "$key_alias" \
             --out "app/build/outputs/apk/release/app-release-signed.apk" \
             "$unsigned"
           "$apksigner" verify --print-certs "app/build/outputs/apk/release/app-release-signed.apk"
