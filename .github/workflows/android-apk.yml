@@ -1,0 +1,111 @@
+name: Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ci/android-apk-build
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-apk:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install web dependencies
+        run: npm ci
+
+      - name: Build web bundle
+        run: npm run build
+
+      - name: Sync web bundle into Android assets
+        run: |
+          set -euo pipefail
+          dest="android/app/src/main/assets"
+          test -f dist/index.html
+          rm -rf "$dest"
+          mkdir -p "$dest"
+          cp dist/index.html "$dest/index.html"
+          cp -r dist/assets "$dest/assets"
+          find "$dest" -maxdepth 2 -type f | sort
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK components
+        run: |
+          set -euo pipefail
+          sdkmanager --install "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+          sdkmanager --list_installed | sed -n '1,40p'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Assemble debug and release APKs
+        working-directory: android
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew --no-daemon --stacktrace assembleDebug assembleRelease
+
+      - name: Sign release APK with the CI debug keystore
+        working-directory: android
+        run: |
+          set -euo pipefail
+          unsigned="app/build/outputs/apk/release/app-release-unsigned.apk"
+          test -f "$unsigned"
+          apksigner="${ANDROID_HOME}/build-tools/36.0.0/apksigner"
+          if [ ! -x "$apksigner" ]; then
+            apksigner="$(command -v apksigner)"
+          fi
+          keystore="${HOME}/.android/debug.keystore"
+          test -f "$keystore"
+          "$apksigner" sign \
+            --ks "$keystore" \
+            --ks-pass pass:android \
+            --key-pass pass:android \
+            --ks-key-alias androiddebugkey \
+            --out "app/build/outputs/apk/release/app-release-signed.apk" \
+            "$unsigned"
+          "$apksigner" verify --print-certs "app/build/outputs/apk/release/app-release-signed.apk"
+
+      - name: Collect artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          cp android/app/build/outputs/apk/debug/app-debug.apk artifacts/recall-lite-debug.apk
+          cp android/app/build/outputs/apk/release/app-release-signed.apk artifacts/recall-lite-release.apk
+          ls -lh artifacts
+
+      - name: Upload APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: recall-lite-android-apk
+          path: artifacts/*.apk
+          if-no-files-found: error
+          retention-days: 14
