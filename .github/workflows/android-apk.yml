@@ -91,8 +91,11 @@ jobs:
         working-directory: android
         run: |
           set -euo pipefail
-          unsigned="app/build/outputs/apk/release/app-release-unsigned.apk"
-          test -f "$unsigned"
+          apk_dir="app/build/outputs/apk/release"
+          ls -l "$apk_dir"
+          unsigned="$(find "$apk_dir" -maxdepth 1 -name '*.apk' ! -name '*-signed.apk' | sort | head -n 1)"
+          test -n "$unsigned"
+          echo "Signing: $unsigned"
           apksigner="${ANDROID_HOME}/build-tools/36.0.0/apksigner"
           if [ ! -x "$apksigner" ]; then
             apksigner="$(command -v apksigner)"
