@@ -54,14 +54,28 @@ jobs:
           java-version: "17"
           cache: gradle
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      # The runner image already ships the Android SDK, and
+      # android-actions/setup-android currently fails on it because
+      # `sdkmanager tools` no longer resolves to a package.
+      - name: Configure Android SDK
+        run: |
+          set -euo pipefail
+          sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          test -d "$sdk_root"
+          sdkmanager="$(find "$sdk_root/cmdline-tools" -maxdepth 3 -name sdkmanager -type f | sort | tail -n 1)"
+          test -n "$sdkmanager"
+          {
+            echo "ANDROID_SDK_ROOT=$sdk_root"
+            echo "ANDROID_HOME=$sdk_root"
+            echo "SDKMANAGER=$sdkmanager"
+          } >> "$GITHUB_ENV"
+          yes | "$sdkmanager" --licenses > /dev/null || true
 
       - name: Install Android SDK components
         run: |
           set -euo pipefail
-          sdkmanager --install "platform-tools" "platforms;android-36" "build-tools;36.0.0"
-          sdkmanager --list_installed | sed -n '1,40p'
+          "$SDKMANAGER" --install "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+          "$SDKMANAGER" --list_installed | sed -n '1,40p'
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
